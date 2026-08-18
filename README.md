@@ -12,8 +12,8 @@ This project was developed to gain a deeper understanding of network protocols, 
 **Linux Only:** This tool is designed for Linux environments (tested on Kali/Ubuntu). It relies on Linux-specific raw socket implementations and header definitions (e.g., bitfields for TCP flags).
 
 ## Prerequisites
-* GCC Compiler
-* Root (`sudo`) privileges are strictly required to open raw sockets.
+GCC Compiler
+Root (`sudo`) privileges are strictly required to open raw sockets.
 
 ## Compilation
 Compile the source code using `gcc`:
