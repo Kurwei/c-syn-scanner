@@ -11,6 +11,7 @@
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 
+// Function to calculate TCP checksum
 unsigned short csum(unsigned short *ptr, int nbytes) {
     register long sum;
     unsigned short oddbyte;
@@ -34,7 +35,8 @@ unsigned short csum(unsigned short *ptr, int nbytes) {
 
 
 int main(int argc, char const *argv[]){
-      if (argc != 5) {
+  // Validate command-line arguments
+  if (argc != 5) {
     printf("Error: Invalid parameters!\n");
     printf("Usage: %s <source hostname/IP> <source port> <target hostname/IP> <target port>\n", argv[0]);
     exit(1);
@@ -46,12 +48,14 @@ int main(int argc, char const *argv[]){
   src_port = atoi(argv[2]);
   dst_port = atoi(argv[4]);
 
+  // Create a raw socket for TCP protocol.
   int sock = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
   if(sock < 0){
     perror("There was an error with the socket don't forget to start the program with sudo\n");
     exit(1);
   }
 
+  // Tell the kernel that we are providing our own IP header (IP_HDRINCL)
   int one = 1;
   const int *val = &one;
   if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(one)) < 0) {
@@ -62,9 +66,11 @@ int main(int argc, char const *argv[]){
   char datagram[4096];
   memset(datagram, 0, 4096);
 
+  // Pointers to IP and TCP header locations inside the datagram buffer
   struct iphdr *iph = (struct iphdr *) datagram;
   struct tcphdr *thdr = (struct tcphdr *) (datagram + sizeof(struct iphdr));
 
+  // Populate the IP header fields
   iph->ihl = 5;
   iph->version = 4;
   iph->tos = 0;
@@ -77,13 +83,13 @@ int main(int argc, char const *argv[]){
   iph->saddr = src_addr;
   iph->daddr = dst_addr;
 
+  // Populate the TCP header fields
   thdr->source = htons(src_port);
   thdr->dest = htons(dst_port);
-
   thdr->seq = htonl(424242420);
   thdr->ack_seq = 0;
   thdr->doff = 5;
-
+  // Set TCP flags (SYN scan -> SYN flag = 1, others = 0)
   thdr->fin = 0;
   thdr->syn = 1;
   thdr->rst = 0;
@@ -95,11 +101,13 @@ int main(int argc, char const *argv[]){
   thdr->check = 0;
   thdr->urg_ptr = 0;
 
+  // Configure destination socket address structure for sendto()
   struct sockaddr_in sin;
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = iph->daddr;
   sin.sin_port = thdr->dest;
 
+  // Define TCP Pseudo-Header structure required for accurate checksum calculation
   struct pseudo_header {
         u_int32_t source_address;
         u_int32_t dest_address;
@@ -119,11 +127,14 @@ int main(int argc, char const *argv[]){
   int psize = sizeof(struct pseudo_header) + sizeof(struct tcphdr);
   char *pseudogram = malloc(psize);
 
+  // Copy pseudo header and TCP header into the pseudogram buffer
   memcpy(pseudogram, (char *)&psh, sizeof(struct pseudo_header));
   memcpy(pseudogram + sizeof(struct pseudo_header), thdr, sizeof(struct tcphdr));
 
+  // Compute final TCP checksum
   thdr->check = csum((unsigned short *)pseudogram, psize);
 
+  // Send the custom packet over the network
   if(sendto(sock, datagram, iph->tot_len, 0, (struct sockaddr *) &sin, sizeof(sin)) < 0){
     perror("Packet couldn't send!\n");
   } else {
@@ -131,20 +142,29 @@ int main(int argc, char const *argv[]){
   }
   free(pseudogram);
 
+  // Listen for responses (SYN-ACK or RST) from the target
   char recv_buffer[4096];
   struct sockaddr_in saddr;
   socklen_t saddr_len = sizeof(saddr);
+
   while(1){
     ssize_t data_size = recvfrom(sock, recv_buffer, 4096, 0, (struct sockaddr *)&saddr, &saddr_len);
+
     if(data_size < 0){
       perror("Packet read error");
       break;
     }
     struct iphdr *recv_iph = (struct iphdr *)recv_buffer;
+
+    // Filter: Check if the packet comes from our target IP
     if (recv_iph->saddr == dst_addr){
       int ip_hdr_len = recv_iph->ihl * 4;
+      // Skip IP header to reach the TCP header
       struct tcphdr *recv_tcph = (struct tcphdr *)(recv_buffer + ip_hdr_len);
+
+      // Filter: Check if the packet is destined for our source port
       if (ntohs(recv_tcph->dest) == src_port) {
+        // Check TCP flags in the response
         if (recv_tcph->syn == 1 && recv_tcph->ack == 1){
           printf("[+] Port %d is open", dst_port);
           break;
