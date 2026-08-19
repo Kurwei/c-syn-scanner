@@ -36,17 +36,19 @@ unsigned short csum(unsigned short *ptr, int nbytes) {
 
 int main(int argc, char const *argv[]){
   // Validate command-line arguments
-  if (argc != 5) {
+  if (argc != 6) {
     printf("Error: Invalid parameters!\n");
-    printf("Usage: %s <source hostname/IP> <source port> <target hostname/IP> <target port>\n", argv[0]);
+    printf("Usage: %s <source hostname/IP> <source port> <target hostname/IP> <starting port> <ending port> \n", argv[0]);
     exit(1);
   }
-  u_int16_t src_port, dst_port;
+  u_int16_t src_port, dst_port, lst_port;
   u_int32_t src_addr, dst_addr;
   src_addr = inet_addr(argv[1]);
   dst_addr = inet_addr(argv[3]);
   src_port = atoi(argv[2]);
   dst_port = atoi(argv[4]);
+  lst_port = atoi(argv[5]);
+
 
   // Create a raw socket for TCP protocol.
   int sock = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
@@ -61,6 +63,13 @@ int main(int argc, char const *argv[]){
   if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(one)) < 0) {
       perror("setsockopt() error!\n");
       exit(1);
+  }
+
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0){
+    perror("Couldn't set timeout!");
   }
 
   char datagram[4096];
@@ -134,49 +143,53 @@ int main(int argc, char const *argv[]){
   // Compute final TCP checksum
   thdr->check = csum((unsigned short *)pseudogram, psize);
 
-  // Send the custom packet over the network
-  if(sendto(sock, datagram, iph->tot_len, 0, (struct sockaddr *) &sin, sizeof(sin)) < 0){
-    perror("Packet couldn't send!\n");
-  } else {
-    printf("Succesful\n");
-  }
-  free(pseudogram);
+  // Scan wanted ports
+  printf("Scanning through port %s to %s\n", argv[4], argv[5]);
 
-  // Listen for responses (SYN-ACK or RST) from the target
-  char recv_buffer[4096];
-  struct sockaddr_in saddr;
-  socklen_t saddr_len = sizeof(saddr);
+  for(int crnt_port = dst_port; crnt_port <= lst_port; crnt_port++){
+    thdr->dest = htons(crnt_port);
+    sin.sin_port = thdr->dest;
 
-  while(1){
+    thdr->check = 0;
+    memcpy(pseudogram + sizeof(struct pseudo_header), thdr, sizeof(struct tcphdr));
+    thdr->check = csum((unsigned short *)pseudogram, psize);
+    // Send the custom packet over the network
+    if(sendto(sock, datagram, iph->tot_len, 0, (struct sockaddr *) &sin, sizeof(sin)) < 0){
+      perror("Packet couldn't send!\n");
+    }
+
+    // Listen for responses (SYN-ACK or RST) from the target
+    char recv_buffer[4096];
+    struct sockaddr_in saddr;
+    socklen_t saddr_len = sizeof(saddr);
+
     ssize_t data_size = recvfrom(sock, recv_buffer, 4096, 0, (struct sockaddr *)&saddr, &saddr_len);
-
     if(data_size < 0){
-      perror("Packet read error");
-      break;
+      printf("[?] Port %d is filtered", dst_port);
+      continue;
     }
     struct iphdr *recv_iph = (struct iphdr *)recv_buffer;
 
     // Filter: Check if the packet comes from our target IP
-    if (recv_iph->saddr == dst_addr){
+    if(recv_iph->saddr == dst_addr){
       int ip_hdr_len = recv_iph->ihl * 4;
       // Skip IP header to reach the TCP header
       struct tcphdr *recv_tcph = (struct tcphdr *)(recv_buffer + ip_hdr_len);
 
       // Filter: Check if the packet is destined for our source port
       if (ntohs(recv_tcph->dest) == src_port) {
+
         // Check TCP flags in the response
         if (recv_tcph->syn == 1 && recv_tcph->ack == 1){
-          printf("[+] Port %d is open", dst_port);
-          break;
+          printf("[+] Port %d is open\n", crnt_port);
         }
-        else if(recv_tcph->rst == 1){
-          printf("[-] Port %d is closed", dst_port);
-          break;
+        else if(lst_port == dst_port && recv_tcph->rst == 1){
+          printf("[-] Port %d is closed\n", dst_port);
         }
       }
     }
   }
+  free(pseudogram);
   close(sock);  
   return(0);
-
 }
